@@ -74,9 +74,18 @@ class ModuleInterface:
 
 
     def get_track_download(self, track_url, download_url, codec, track_authorization, **kwargs):
-        is_hls = False
-        if isinstance(track_url, str) and '/stream/hls' in track_url:
-            is_hls = True
+        explicit_is_hls_from_kwargs = kwargs.get('is_hls')
+        determined_is_hls = False
+
+        if explicit_is_hls_from_kwargs is True:
+            determined_is_hls = True
+        elif isinstance(track_url, str) and \
+             ('/hls' in track_url.lower() or \
+              '.m3u8' in track_url.lower() or \
+              'ctr-encrypted-hls' in track_url.lower()):
+            determined_is_hls = True
+        
+        is_hls = determined_is_hls
 
         access_token = self.websession.access_token
 
@@ -96,10 +105,10 @@ class ModuleInterface:
             output_location = create_temp_filename() + '.' + extension
             
             ffmpeg_input_options = {
-                'f': 'hls',
+                # 'f': 'hls', # Usually auto-detected, can be omitted
                 'hide_banner': None,
                 'y': None, 
-                'headers': f'Authorization: OAuth {access_token}\\r\\n',
+                'headers': f'Authorization: OAuth {access_token}\r\n',
                 'protocol_whitelist': 'http,https,tls,tcp,file,crypto'
             }
             ffmpeg_output_options = {
@@ -108,7 +117,6 @@ class ModuleInterface:
             }
 
             try:
-                compiled_cmd_list = ffmpeg.input(m3u8_url_resolved, **ffmpeg_input_options).output(output_location, **ffmpeg_output_options).compile()
                 process = ffmpeg.input(m3u8_url_resolved, **ffmpeg_input_options).output(output_location, **ffmpeg_output_options).run_async(pipe_stdout=True, pipe_stderr=True)
                 out, err = process.communicate()
 
@@ -164,12 +172,19 @@ class ModuleInterface:
         # preset_string is like "aac_256k" or "aac_1_0"
         if not isinstance(preset_string, str):
             return 0
-        match = re.search(r'aac_(\d+)k', preset_string)
-        if match:
+        
+        # Handle aac_XXXk format (e.g., aac_256k)
+        match_kbps = re.search(r'aac_(\d+)k', preset_string)
+        if match_kbps:
             try:
-                return int(match.group(1))
+                return int(match_kbps.group(1))
             except ValueError:
-                return 0
+                return 0 # Should not happen if regex matches
+
+        # Handle other aac_ formats like aac_1_0, assign a default quality
+        if preset_string.startswith('aac_'):            
+            return 64 
+
         return 0 # Default if no clear bitrate is found or format is unexpected
 
     def _parse_progressive_bitrate_from_preset(self, preset_string, stream_codec_name):
@@ -198,8 +213,7 @@ class ModuleInterface:
         if stream_codec_name == 'OPUS' and len(parts) > 1 and parts[0] == 'opus' and parts[1].isdigit():
             try: 
                 quality_level = int(parts[1])
-                # Simple scaling: maps 0-10 to something in a typical bitrate range
-                # This is a rough heuristic and might need adjustment based on typical SC Opus presets
+                # Simple scaling: maps 0-10 to something in a typical bitrate range                
                 return quality_level * 12 + 32 # e.g. 0->32, 5->92, 8->128, 10->152
             except ValueError: pass
 
@@ -223,8 +237,7 @@ class ModuleInterface:
                 error = f"Unknown codec from direct download Content-Type: {content_type_header}"
                 final_codec = CodecEnum.AAC # Default
             final_is_hls_stream = False
-            # For direct downloads, file_url is not used; download_url is primary.
-            # We can set file_url to download_url for consistency if needed by caller, but it's not strictly a media stream URL.
+            # For direct downloads, file_url is not used; download_url is primary.            
             file_url = download_url 
 
         elif track_data['streamable']:
@@ -249,10 +262,30 @@ class ModuleInterface:
 
                     if stream_codec_name in CodecEnum.__members__:
                         current_codec_enum = CodecEnum[stream_codec_name]
-                        is_hls = (protocol == 'hls')
-                        quality_score = 0
+                        
+                        # Determine if it's an HLS stream more robustly
+                        stream_transcoding_url_for_check = i['url']
+                        is_hls_by_protocol = (protocol == 'hls')
+                        is_hls_by_url = (isinstance(stream_transcoding_url_for_check, str) and \
+                                         ('/hls' in stream_transcoding_url_for_check.lower() or \
+                                          '.m3u8' in stream_transcoding_url_for_check.lower() or \
+                                          'ctr-encrypted-hls' in stream_transcoding_url_for_check.lower() or \
+                                          'cbc-encrypted-hls' in stream_transcoding_url_for_check.lower()))
+                        is_hls = is_hls_by_protocol or is_hls_by_url
+                        
+                        # Determine if it's an ENCRYPTED HLS stream
+                        is_encrypted_hls = False
+                        if is_hls and isinstance(stream_transcoding_url_for_check, str) and \
+                           ('ctr-encrypted-hls' in stream_transcoding_url_for_check.lower() or \
+                            'cbc-encrypted-hls' in stream_transcoding_url_for_check.lower()):
+                            is_encrypted_hls = True
+                        # End of new HLS determination logic
+                        
+                        quality_score = 0 # Renamed from 'quality'
 
-                        if is_hls:
+                        if is_encrypted_hls:
+                            quality_score = -100 # Heavily penalize encrypted streams
+                        elif is_hls:
                             if current_codec_enum == CodecEnum.AAC:
                                 quality_score = self._parse_aac_bitrate_from_preset(preset_string)
                             # Add parsing for HLS Opus/MP3 bitrates if their presets have them
@@ -262,15 +295,16 @@ class ModuleInterface:
                         else: # Progressive
                             quality_score = self._parse_progressive_bitrate_from_preset(preset_string, stream_codec_name)
                         
-                        if i['url'] and quality_score > 0: # Only consider streams with a URL and some quality
+                        if i['url'] and quality_score >= 0: # Only consider streams with a URL and non-negative quality
                             pref_score = codec_preference.get((current_codec_enum, is_hls), 0)
                             available_streams.append({
                                 'url': i['url'],
                                 'codec': current_codec_enum,
                                 'is_hls': is_hls,
+                                'is_encrypted': is_encrypted_hls,
                                 'quality': quality_score,
                                 'preference': pref_score,
-                                'preset': preset_string # For debugging/logging if needed
+                                'preset': preset_string
                             })
                 
                 if available_streams:
@@ -278,17 +312,28 @@ class ModuleInterface:
                     available_streams.sort(key=lambda x: (x['quality'], x['preference']), reverse=True)
                     
                     best_stream = available_streams[0]
+                    # Ensure the best stream has a positive quality, otherwise it might be an undesired low-quality default
+                    # Always set these from the best stream found
                     file_url = best_stream['url']
                     final_codec = best_stream['codec']
                     final_is_hls_stream = best_stream['is_hls']
-                    error = None
+                    final_is_encrypted_hls = best_stream.get('is_encrypted', False)
+                    
+                    if final_is_encrypted_hls:
+                        error = "Track is available as a DRM-protected HLS stream, which can be downloaded, but aren't playable without decryption key. Skipping."
+                    elif best_stream['quality'] > 0:
+                        error = None # Clear previous errors if a good stream is found
+                    else:
+                        # This case means the best found stream had quality 0 or less (e.g. only failed parsing or was encrypted)
+                        if not final_is_encrypted_hls: # Don't overwrite specific DRM error
+                            error = f"Best stream found (preset: {best_stream['preset']}) has zero or negative quality, or codec could not be parsed."
                 else:
-                    error = 'No suitable stream formats found after parsing.'
+                    error = "No stream transcodings found or none were usable."
             else:
-                error = 'Track not streamable (no transcodings listed)'
+                error = "No stream transcodings available for this track."
         else:
-            error = 'Track not streamable'
-
+            error = "Track is not available for download or streaming."
+        
         return TrackInfo(
             name = track_data['title'].split(' - ')[1] if ' - ' in track_data['title'] else track_data['title'],
             album = metadata.get('album_title'),
