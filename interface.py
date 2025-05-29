@@ -1,4 +1,5 @@
 import ffmpeg
+import re
 
 from utils.models import *
 from utils.utils import create_temp_filename, download_to_temp, silentremove
@@ -72,17 +73,79 @@ class ModuleInterface:
         ) for result in results['collection']]
 
 
-    def get_track_download(self, track_url, download_url, codec, track_authorization):
-        if not download_url: download_url = self.websession.get_track_stream_link(track_url, track_authorization)
-        if codec == CodecEnum.AAC: # Done like this since the header is slightly broken? Not sure why
+    def get_track_download(self, track_url, download_url, codec, track_authorization, **kwargs):
+        is_hls = False
+        if isinstance(track_url, str) and '/stream/hls' in track_url:
+            is_hls = True
+
+        access_token = self.websession.access_token
+
+        if is_hls:
+            if not track_url:
+                raise self.exception("HLS stream URL not found in get_track_download (is_hls path)")
+            
+            m3u8_url_resolved = None
+            try:
+                m3u8_url_resolved = self.websession.get_track_stream_link(track_url, track_authorization)
+                if not m3u8_url_resolved or not isinstance(m3u8_url_resolved, str) or not m3u8_url_resolved.startswith('http'):
+                    raise self.exception(f"HLS_INVALID_M3U8_URL: Resolved M3U8 URL is invalid: {m3u8_url_resolved}")
+            except Exception as e:
+                raise self.exception(f"HLS_M3U8_RESOLUTION_ERROR: Failed to resolve M3U8 stream link: {e}")
+
+            extension = codec_data[codec].container.name if codec in codec_data else 'm4a'
+            output_location = create_temp_filename() + '.' + extension
+            
+            ffmpeg_input_options = {
+                'f': 'hls',
+                'hide_banner': None,
+                'y': None, 
+                'headers': f'Authorization: OAuth {access_token}\\r\\n',
+                'protocol_whitelist': 'http,https,tls,tcp,file,crypto'
+            }
+            ffmpeg_output_options = {
+                'acodec': 'copy',
+                'loglevel': 'error' 
+            }
+
+            try:
+                compiled_cmd_list = ffmpeg.input(m3u8_url_resolved, **ffmpeg_input_options).output(output_location, **ffmpeg_output_options).compile()
+                process = ffmpeg.input(m3u8_url_resolved, **ffmpeg_input_options).output(output_location, **ffmpeg_output_options).run_async(pipe_stdout=True, pipe_stderr=True)
+                out, err = process.communicate()
+
+                if process.returncode != 0:
+                    silentremove(output_location)
+                    stderr_output = err.decode('utf8', errors='ignore') if err else "No stderr from process"
+                    raise self.exception(f"HLS_DOWNLOAD_FFMPEG_ERROR: FFmpeg process failed (RC: {process.returncode}). Stderr: {stderr_output}")
+
+            except ffmpeg.Error as e:
+                silentremove(output_location)
+                stderr_log = e.stderr.decode('utf8', errors='ignore') if hasattr(e, 'stderr') and e.stderr else "No direct stderr from ffmpeg.Error object"
+                raise self.exception(f"HLS_FFMPEG_LIB_ERROR: {stderr_log}. Original error: {e}")
+            except Exception as e:
+                silentremove(output_location)
+                raise self.exception(f"HLS_UNEXPECTED_ERROR_IN_TRY_BLOCK: {e}")
+            
+            return TrackDownloadInfo(
+                download_type = DownloadEnum.TEMP_FILE_PATH,
+                temp_file_path = output_location
+            )
+        
+        auth_header_non_hls = {"Authorization": f"OAuth {access_token}"}
+        if not download_url: 
+            resolved_stream_url = self.websession.get_track_stream_link(track_url, track_authorization)
+        else:
+            resolved_stream_url = download_url
+
+        if codec == CodecEnum.AAC:
             extension = codec_data[codec].container.name
-            temp_location = download_to_temp(download_url, {"Authorization": "OAuth " + self.websession.access_token}, extension)
+            temp_location = download_to_temp(resolved_stream_url, auth_header_non_hls, extension)
             output_location = create_temp_filename() + '.' + extension
             try:
-                ffmpeg.input(temp_location, hide_banner=None, y=None).output(output_location, acodec='copy', loglevel='error').run()
+                ffmpeg.input(temp_location).output(output_location, acodec='copy', loglevel='error').run()
                 silentremove(temp_location)
-            except:
-                print('FFmpeg is not installed or working! Using fallback, may have errors')
+            except Exception as e:
+                silentremove(output_location)
+                print(f'FFmpeg is not installed or working properly for AAC remux! Error: {e}. Using fallback, may have errors.')
                 output_location = temp_location
 
             return TrackDownloadInfo(
@@ -92,30 +155,137 @@ class ModuleInterface:
         else:
             return TrackDownloadInfo(
                 download_type = DownloadEnum.URL,
-                file_url = download_url,
-                file_url_headers = {"Authorization": "OAuth " + self.websession.access_token}
+                file_url = resolved_stream_url,
+                file_url_headers = auth_header_non_hls
             )
 
+
+    def _parse_aac_bitrate_from_preset(self, preset_string):
+        # preset_string is like "aac_256k" or "aac_1_0"
+        if not isinstance(preset_string, str):
+            return 0
+        match = re.search(r'aac_(\d+)k', preset_string)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return 0
+        return 0 # Default if no clear bitrate is found or format is unexpected
+
+    def _parse_progressive_bitrate_from_preset(self, preset_string, stream_codec_name):
+        if not isinstance(preset_string, str):
+            return 0
+
+        # Specific SoundCloud Opus presets (these are descriptive, not direct bitrates)
+        if stream_codec_name == 'OPUS':
+            if 'abr_hq' in preset_string: return 128 # Approximate for high quality Opus
+            if 'abr_sq' in preset_string: return 96  # Approximate for standard quality Opus
+        
+        # Generic pattern for mp3_XXXk or opus_XXXk or aac_XXXk
+        match_kbps = re.search(r'(\d+)k', preset_string)
+        if match_kbps:
+            try: return int(match_kbps.group(1))
+            except ValueError: pass
+
+        # Generic pattern for mp3_XXX or opus_XXX or aac_XXX (where XXX is bitrate)
+        parts = preset_string.split('_')
+        if len(parts) > 1 and parts[1].isdigit():
+            try: return int(parts[1])
+            except ValueError: pass
+        
+        # Fallback for Opus quality levels like opus_X_Y (0-10 for X in opusenc)
+        # Scale X to an approximate bitrate range (e.g. X*12 might map 0-10 to 0-120kbps range)
+        if stream_codec_name == 'OPUS' and len(parts) > 1 and parts[0] == 'opus' and parts[1].isdigit():
+            try: 
+                quality_level = int(parts[1])
+                # Simple scaling: maps 0-10 to something in a typical bitrate range
+                # This is a rough heuristic and might need adjustment based on typical SC Opus presets
+                return quality_level * 12 + 32 # e.g. 0->32, 5->92, 8->128, 10->152
+            except ValueError: pass
+
+        return 0 # Default
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
         track_data = data[track_id] if track_id in data else self.websession._get('tracks/' + track_id)
         metadata = track_data.get('publisher_metadata') or {}
 
-        file_url, download_url, codec, error = None, None, CodecEnum.AAC, None
+        file_url, download_url, final_codec, error = None, None, CodecEnum.AAC, None
+        final_is_hls_stream = False
+
         if track_data['downloadable'] and track_data['has_downloads_left']:
             download_url = self.websession.get_track_download(track_id)
-            codec = CodecEnum[self.websession.s.head(download_url).headers['Content-Type'].split('/')[1].replace('mpeg', 'mp3').replace('ogg', 'vorbis').upper()]
+            content_type_header = self.websession.s.head(download_url).headers.get('Content-Type', '')
+            codec_str_part = content_type_header.split('/')[-1]
+            codec_str = codec_str_part.replace('mpeg', 'mp3').replace('ogg', 'vorbis').upper()
+            if codec_str in CodecEnum.__members__:
+                final_codec = CodecEnum[codec_str]
+            else:
+                error = f"Unknown codec from direct download Content-Type: {content_type_header}"
+                final_codec = CodecEnum.AAC # Default
+            final_is_hls_stream = False
+            # For direct downloads, file_url is not used; download_url is primary.
+            # We can set file_url to download_url for consistency if needed by caller, but it's not strictly a media stream URL.
+            file_url = download_url 
+
         elif track_data['streamable']:
             if track_data['media']['transcodings']:
-                for i in track_data['media']['transcodings']: # TODO: add support for lower quality tiers
-                    if i['format']['protocol'] == 'progressive':
-                        file_url = i['url']
-                        codec = CodecEnum[i['preset'].split('_')[0].upper()]
-                        break
+                available_streams = []
+                # Codec preference for tie-breaking (higher is better)
+                # Prefer HLS slightly if quality is identical
+                codec_preference = {
+                    (CodecEnum.AAC, True): 5,  # HLS AAC
+                    (CodecEnum.OPUS, True): 4, # HLS Opus
+                    (CodecEnum.OPUS, False): 3,# Progressive Opus
+                    (CodecEnum.AAC, False): 2, # Progressive AAC
+                    (CodecEnum.MP3, False): 1, # Progressive MP3
+                    (CodecEnum.MP3, True): 0,  # HLS MP3 (less common, lower preference)
+                }
+
+                for i in track_data['media']['transcodings']:
+                    protocol = i['format']['protocol']
+                    preset_string = i['preset']
+                    preset_parts = preset_string.split('_')
+                    stream_codec_name = preset_parts[0].upper() if preset_parts else ''
+
+                    if stream_codec_name in CodecEnum.__members__:
+                        current_codec_enum = CodecEnum[stream_codec_name]
+                        is_hls = (protocol == 'hls')
+                        quality_score = 0
+
+                        if is_hls:
+                            if current_codec_enum == CodecEnum.AAC:
+                                quality_score = self._parse_aac_bitrate_from_preset(preset_string)
+                            # Add parsing for HLS Opus/MP3 bitrates if their presets have them
+                            # For now, relying on generic progressive parser or default 0 for other HLS
+                            else: 
+                                quality_score = self._parse_progressive_bitrate_from_preset(preset_string, stream_codec_name)
+                        else: # Progressive
+                            quality_score = self._parse_progressive_bitrate_from_preset(preset_string, stream_codec_name)
+                        
+                        if i['url'] and quality_score > 0: # Only consider streams with a URL and some quality
+                            pref_score = codec_preference.get((current_codec_enum, is_hls), 0)
+                            available_streams.append({
+                                'url': i['url'],
+                                'codec': current_codec_enum,
+                                'is_hls': is_hls,
+                                'quality': quality_score,
+                                'preference': pref_score,
+                                'preset': preset_string # For debugging/logging if needed
+                            })
+                
+                if available_streams:
+                    # Sort: 1. quality (desc), 2. preference score (desc)
+                    available_streams.sort(key=lambda x: (x['quality'], x['preference']), reverse=True)
+                    
+                    best_stream = available_streams[0]
+                    file_url = best_stream['url']
+                    final_codec = best_stream['codec']
+                    final_is_hls_stream = best_stream['is_hls']
+                    error = None
                 else:
-                    error = 'Track requires HLS, so it cannot be downloaded by this module until a later update'
+                    error = 'No suitable stream formats found after parsing.'
             else:
-                error = 'Track not streamable'
+                error = 'Track not streamable (no transcodings listed)'
         else:
             error = 'Track not streamable'
 
@@ -125,8 +295,14 @@ class ModuleInterface:
             album_id = '',
             artists = self.artists_split(metadata['artist'] if metadata.get('artist') else track_data['user']['username']),
             artist_id = '' if 'artist' in metadata else track_data['user']['permalink'],
-            download_extra_kwargs = {'track_url': file_url, 'download_url': download_url, 'codec': codec, 'track_authorization': track_data['track_authorization']},
-            codec = codec,
+            download_extra_kwargs = {
+                'track_url': file_url, 
+                'download_url': download_url, 
+                'codec': final_codec, 
+                'track_authorization': track_data['track_authorization'],
+                'is_hls': final_is_hls_stream
+            },
+            codec = final_codec,
             sample_rate = 48,
             release_year = self.get_release_year(track_data),
             cover_url = self.artwork_url_format(track_data.get('artwork_url') or track_data['user']['avatar_url']),
