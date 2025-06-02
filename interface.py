@@ -22,6 +22,7 @@ class ModuleInterface:
         self.exception = module_controller.module_error
         settings = module_controller.module_settings
         self.websession = SoundCloudWebAPI(settings['web_access_token'], module_controller.module_error)
+        self.module_controller = module_controller
 
         self.artists_split = lambda artists_string: artists_string.replace(' & ', ', ').replace(' and ', ', ').replace(' x ', ', ').split(', ')
         self.artwork_url_format = lambda artwork_url: artwork_url.replace('-large', '-original') if artwork_url else None
@@ -365,7 +366,13 @@ class ModuleInterface:
         )
     
 
-    def get_album_info(self, album_id, data):
+    def get_album_info(self, album_id, data: dict) -> AlbumInfo | None:
+        if not album_id:  # This will be true if album_id is None or an empty string
+            if self.module_controller.orpheus_options.debug_mode:
+                self.module_controller.printer_controller.oprint(f"[SoundCloud] get_album_info: Called with an empty or None album_id. Cannot fetch album details.")
+            return None
+        
+        # Attempt to get data from the provided dict first
         playlist_data = data[album_id]
         playlist_tracks = self.websession.get_tracks_from_tracklist(playlist_data['tracks']) if playlist_data.get('tracks') else {}
         return AlbumInfo(
