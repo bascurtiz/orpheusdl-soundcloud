@@ -5,9 +5,9 @@ OrpheusDL - SoundCloud
 
 A SoundCloud module for the OrpheusDL modular archival music program
 
-[Report Bug](https://github.com/yarrm80s/orpheusdl-soundcloud/issues)
+[Report Bug](https://github.com/bascurtiz/orpheusdl-soundcloud/issues)
 ·
-[Request Feature](https://github.com/yarrm80s/orpheusdl-soundcloud/issues)
+[Request Feature](https://github.com/bascurtiz/orpheusdl-soundcloud/issues)
 
 
 ## Table of content
@@ -35,13 +35,13 @@ Follow these steps to get a local copy of Orpheus up and running:
 
 ### Prerequisites
 
-* Already have [OrpheusDL](https://github.com/yarrm80s/orpheusdl) installed
+* Already have [OrpheusDL](https://github.com/bascurtiz/orpheusdl) installed
 
 ### Installation
 
-Just clone the repo inside the folder `orpheusdl/modules/`
+Go to your orpheusdl/ directory and run the following command
    ```sh
-   git clone https://github.com/yarrm80s/orpheusdl-soundcloud.git orpheusdl/modules/soundcloud
+   git clone https://github.com/bascurtiz/orpheusdl-soundcloud modules/soundcloud
    ```
 
 <!-- USAGE EXAMPLES -->
@@ -66,7 +66,7 @@ loaded module. You'll find the configuration file here: `config/settings.json`
     "artist_download_ignore_tracks_in_albums": ""
 }
 ```
-`access_token`: An access token from the MOBILE app in the form `2-111111-1111111111-aaaaaaaaaaaaa`
+`access_token`: An access token in the form `2-111111-1111111111-aaaaaaaaaaaaa`
 
 `artist_download_ignore_tracks_in_albums`: When downloading artists, albums and tracks are downloaded separately. Enable this to skip tracks already downloaded in albums.
 
@@ -75,4 +75,4 @@ loaded module. You'll find the configuration file here: `config/settings.json`
 
 Yarrm80s - [@yarrm80s](https://github.com/yarrm80s)
 
-Project Link: [OrpheusDL SoundCloud Public GitHub Repository](https://github.com/yarrm80s/orpheusdl-soundcloud)
+OG Project Link: [OrpheusDL SoundCloud Public GitHub Repository](https://github.com/yarrm80s/orpheusdl-soundcloud)
