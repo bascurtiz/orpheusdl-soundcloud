@@ -1,4 +1,14 @@
-import ffmpeg
+# Lazy import ffmpeg to avoid circular import issues in PyInstaller bundles
+ffmpeg = None
+
+def _get_ffmpeg():
+    """Lazily import ffmpeg module."""
+    global ffmpeg
+    if ffmpeg is None:
+        import ffmpeg as _ffmpeg
+        ffmpeg = _ffmpeg
+    return ffmpeg
+
 import re
 
 from utils.models import *
@@ -118,7 +128,8 @@ class ModuleInterface:
             }
 
             try:
-                process = ffmpeg.input(m3u8_url_resolved, **ffmpeg_input_options).output(output_location, **ffmpeg_output_options).run_async(pipe_stdout=True, pipe_stderr=True)
+                _ffmpeg = _get_ffmpeg()
+                process = _ffmpeg.input(m3u8_url_resolved, **ffmpeg_input_options).output(output_location, **ffmpeg_output_options).run_async(pipe_stdout=True, pipe_stderr=True)
                 out, err = process.communicate()
 
                 if process.returncode != 0:
@@ -126,7 +137,7 @@ class ModuleInterface:
                     stderr_output = err.decode('utf8', errors='ignore') if err else "No stderr from process"
                     raise self.exception(f"HLS_DOWNLOAD_FFMPEG_ERROR: FFmpeg process failed (RC: {process.returncode}). Stderr: {stderr_output}")
 
-            except ffmpeg.Error as e:
+            except _get_ffmpeg().Error as e:
                 silentremove(output_location)
                 stderr_log = e.stderr.decode('utf8', errors='ignore') if hasattr(e, 'stderr') and e.stderr else "No direct stderr from ffmpeg.Error object"
                 raise self.exception(f"HLS_FFMPEG_LIB_ERROR: {stderr_log}. Original error: {e}")
@@ -150,7 +161,7 @@ class ModuleInterface:
             temp_location = download_to_temp(resolved_stream_url, auth_header_non_hls, extension)
             output_location = create_temp_filename() + '.' + extension
             try:
-                ffmpeg.input(temp_location).output(output_location, acodec='copy', loglevel='error').run()
+                _get_ffmpeg().input(temp_location).output(output_location, acodec='copy', loglevel='error').run()
                 silentremove(temp_location)
             except Exception as e:
                 silentremove(output_location)
