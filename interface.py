@@ -76,12 +76,75 @@ class ModuleInterface:
             raise self.exception(f'Query type {query_type.name} is unsupported')
         results = self.websession.search(qt, query, limit)
         
-        return [SearchResult(
-            result_id = result['id'],
-            name = result['title'] if qt != 'users' else result['username'],
-            artists = self.artists_split(result['user']['username']) if qt != 'users' else None,
-            extra_kwargs = {'data': {result['id'] : result}}
-        ) for result in results['collection']]
+        search_results = []
+        for result in results['collection']:
+            # Get cover/artwork URL
+            image_url = None
+            if qt == 'users':
+                # For artists, use avatar
+                image_url = result.get('avatar_url')
+            elif qt in ('playlists_without_albums', 'albums'):
+                # For playlists/albums, try multiple sources:
+                # 1. Playlist's own artwork_url
+                # 2. calculated_artwork_url (auto-generated from tracks)
+                # 3. First track's artwork (if tracks are included in search results)
+                # Note: We DON'T fall back to user avatar for playlists - that shows a generic person icon
+                image_url = result.get('artwork_url')
+                if not image_url:
+                    image_url = result.get('calculated_artwork_url')
+                if not image_url:
+                    # Try to get artwork from first track
+                    tracks = result.get('tracks', [])
+                    if tracks and len(tracks) > 0:
+                        first_track = tracks[0]
+                        image_url = first_track.get('artwork_url')
+                # Skip user avatar fallback for playlists - it's just a generic person icon
+            else:
+                # For tracks, use artwork or fallback to user avatar
+                image_url = result.get('artwork_url') or (result.get('user', {}).get('avatar_url') if result.get('user') else None)
+            
+            # Skip default/placeholder avatar URLs (they show generic person icons)
+            if image_url and 'default_avatar' in image_url:
+                image_url = None
+            
+            # Convert to smaller size for thumbnails (use -t200x200 for search results)
+            if image_url:
+                image_url = image_url.replace('-large', '-t200x200')
+            
+            # Preview URL for tracks - leave as None, will be lazy-loaded on click
+            # SoundCloud requires resolving stream URLs which needs API authentication
+            preview_url = None
+            # Note: Track is streamable if result.get('streamable') is True
+            # The actual stream URL will be fetched on-demand via lazy loading
+            
+            # Get duration for tracks
+            duration = None
+            if qt == 'tracks' and result.get('duration'):
+                duration = result['duration'] // 1000  # Convert ms to seconds
+            elif qt in ('albums', 'playlists_without_albums') and result.get('duration'):
+                duration = result['duration'] // 1000
+            
+            # Get year
+            year = None
+            if result.get('release_date'):
+                year = result['release_date'].split('-')[0]
+            elif result.get('display_date'):
+                year = result['display_date'].split('-')[0]
+            elif result.get('created_at'):
+                year = result['created_at'].split('-')[0]
+            
+            search_results.append(SearchResult(
+                result_id = result['id'],
+                name = result['title'] if qt != 'users' else result['username'],
+                artists = self.artists_split(result['user']['username']) if qt != 'users' else None,
+                year = year,
+                duration = duration,
+                image_url = image_url,
+                preview_url = preview_url,
+                extra_kwargs = {'data': {result['id'] : result}}
+            ))
+        
+        return search_results
 
 
     def get_track_download(self, track_url, download_url, codec, track_authorization, **kwargs):

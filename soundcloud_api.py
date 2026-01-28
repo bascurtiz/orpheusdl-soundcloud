@@ -26,6 +26,53 @@ class SoundCloudWebAPI:
     def get_track_stream_link(self, file_url, access_token): # Why does strip/lstrip not work here...?
         return self._get(file_url.split('https://api-v2.soundcloud.com/')[1], {'track_authorization': access_token})['url']
 
+    def get_preview_stream_url(self, track_id, track_authorization=None):
+        """Get a direct stream URL for preview playback."""
+        try:
+            # Get track data to find transcodings
+            track_data = self._get(f'tracks/{track_id}')
+            
+            if not track_data.get('streamable'):
+                return None
+            
+            transcodings = track_data.get('media', {}).get('transcodings', [])
+            if not transcodings:
+                return None
+            
+            # Use track_authorization from track_data if not provided
+            auth = track_authorization or track_data.get('track_authorization', '')
+            
+            # Find best stream for preview (prefer progressive over HLS)
+            best_url = None
+            for transcoding in transcodings:
+                protocol = transcoding.get('format', {}).get('protocol', '')
+                url = transcoding.get('url', '')
+                
+                if url:
+                    if protocol == 'progressive':
+                        # Progressive is preferred, resolve and return immediately
+                        try:
+                            resolved_url = self.get_track_stream_link(url, auth)
+                            return resolved_url
+                        except:
+                            continue
+                    elif protocol == 'hls' and not best_url:
+                        # Store HLS as fallback
+                        best_url = url
+            
+            # If only HLS available, try to resolve it
+            if best_url:
+                try:
+                    resolved_url = self.get_track_stream_link(best_url, auth)
+                    return resolved_url
+                except:
+                    pass
+            
+            return None
+        except Exception as e:
+            print(f"[SoundCloud] Error getting preview stream: {e}")
+            return None
+
 
     def resolve_url(self, url):
         return self._get('resolve', {'url': url})
