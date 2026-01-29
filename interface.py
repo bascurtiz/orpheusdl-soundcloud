@@ -31,7 +31,13 @@ class ModuleInterface:
     def __init__(self, module_controller: ModuleController):
         self.exception = module_controller.module_error
         settings = module_controller.module_settings
-        self.websession = SoundCloudWebAPI(settings['web_access_token'], module_controller.module_error)
+        web_access_token = settings.get('web_access_token', '')
+        
+        # Check if web_access_token is provided
+        if not web_access_token:
+            raise self.exception('SoundCloud credentials are required. Please fill in your web access token (oauth) in the settings.')
+        
+        self.websession = SoundCloudWebAPI(web_access_token, module_controller.module_error)
         self.module_controller = module_controller
 
         self.artists_split = lambda artists_string: artists_string.replace(' & ', ', ').replace(' and ', ', ').replace(' x ', ', ').split(', ')
