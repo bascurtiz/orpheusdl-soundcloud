@@ -154,6 +154,9 @@ class ModuleInterface:
 
 
     def get_track_download(self, track_url, download_url, codec, track_authorization, **kwargs):
+        # Track not available for streaming/download (e.g. geo-restricted or not offered in your region)
+        if not track_url and not download_url:
+            raise self.exception("Track is not available for download or streaming. It may be restricted in your region or not offered on SoundCloud.")
         explicit_is_hls_from_kwargs = kwargs.get('is_hls')
         determined_is_hls = False
 
@@ -413,9 +416,10 @@ class ModuleInterface:
             else:
                 error = "No stream transcodings available for this track."
         else:
-            error = "Track is not available for download or streaming."
+            error = "Track is not available for streaming or download (may be restricted in your region or not offered on SoundCloud)."
         
         return TrackInfo(
+            id = str(track_id),
             name = track_data['title'].split(' - ')[1] if ' - ' in track_data['title'] else track_data['title'],
             album = metadata.get('album_title'),
             album_id = '',
@@ -425,7 +429,7 @@ class ModuleInterface:
                 'track_url': file_url, 
                 'download_url': download_url, 
                 'codec': final_codec, 
-                'track_authorization': track_data['track_authorization'],
+                'track_authorization': track_data.get('track_authorization', ''),
                 'is_hls': final_is_hls_stream
             },
             codec = final_codec,
@@ -481,9 +485,30 @@ class ModuleInterface:
 
 
     def get_artist_info(self, artist_id, get_credited_albums, data):
+        # Get name and permalink from data or by fetching users/{id}
+        name = ''
+        permalink = None
+        try:
+            ud = (data or {}).get(artist_id) or (data or {}).get(str(artist_id)) or (data or {}).get(int(artist_id) if str(artist_id).isdigit() else None)
+            if isinstance(ud, dict):
+                name = ud.get('username', '') or name
+                permalink = ud.get('permalink')
+        except (TypeError, KeyError, AttributeError):
+            pass
+        if not name or not permalink:
+            try:
+                user_data = self.websession._get(f'users/{artist_id}')
+                name = name or user_data.get('username', 'Artist') or 'Artist'
+                permalink = permalink or user_data.get('permalink')
+            except Exception:
+                name = name or 'Artist'
+        # Prefer numeric artist_id from search so we load the exact user
         album_data, track_data = self.websession.get_user_albums_tracks(artist_id)
+        # Only retry with permalink when we didn't use numeric id (e.g. artist_id was permalink); avoids duplicate 403 when uid is same
+        if not album_data and not track_data and permalink and str(permalink) != str(artist_id) and not (str(artist_id).isdigit()):
+            album_data, track_data = self.websession.get_user_albums_tracks(permalink)
         return ArtistInfo(
-            name = data[artist_id]['username'],
+            name = name,
             albums = list(album_data.keys()),
             album_extra_kwargs = {'data': album_data},
             tracks = list(track_data.keys()),

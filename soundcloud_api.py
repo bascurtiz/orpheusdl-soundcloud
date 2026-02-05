@@ -9,14 +9,55 @@ class SoundCloudWebAPI:
         self.s = create_requests_session()
 
 
-    def _get(self, url, params = {}):
-        headers = {
+    def _headers(self):
+        return {
             'Authorization': f'OAuth {self.access_token}',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36'
         }
-        r = self.s.get(f'{self.api_base}{url}', params=params, headers=headers)
-        if r.status_code not in [200, 201, 202]: raise self.exception(f'{r.status_code!s}: {r.text}')
+
+    def _get(self, url, params=None):
+        params = params or {}
+        headers = self._headers()
+        if url.startswith('http://') or url.startswith('https://'):
+            r = self.s.get(url, headers=headers)
+        else:
+            r = self.s.get(f'{self.api_base}{url}', params=params, headers=headers)
+        if r.status_code not in [200, 201, 202]:
+            if r.status_code == 403:
+                raise self.exception("This track is not available (e.g. restricted in your country or disabled for API access).")
+            raise self.exception(f'{r.status_code!s}: {r.text}')
         return r.json()
+
+    def _get_collection_paginated(self, url, params=None, max_pages=50):
+        """Fetch a paginated collection; handle both list response and dict with collection/next_href. Follow next_href until no more."""
+        params = params or {}
+        all_items = []
+        page_url = url
+        page_params = params
+        for _ in range(max_pages):
+            if page_url.startswith('http://') or page_url.startswith('https://'):
+                resp = self._get(page_url)
+                page_url = None
+                page_params = None
+            else:
+                resp = self._get(page_url, page_params)
+                page_url = None
+            if isinstance(resp, list):
+                collection = resp
+                next_href = None
+            elif isinstance(resp, dict):
+                collection = resp.get('collection', [])
+                next_href = resp.get('next_href')
+            else:
+                collection = []
+                next_href = None
+            for i in collection:
+                if isinstance(i, dict) and 'id' in i:
+                    all_items.append(i)
+            if not next_href:
+                break
+            page_url = next_href
+        return all_items
 
 
     def get_track_download(self, track_id):
@@ -24,6 +65,10 @@ class SoundCloudWebAPI:
     
 
     def get_track_stream_link(self, file_url, access_token): # Why does strip/lstrip not work here...?
+        if not file_url or not isinstance(file_url, str):
+            raise self.exception("Stream URL is missing. This track may not be available for streaming or download in your region.")
+        if 'https://api-v2.soundcloud.com/' not in file_url:
+            raise self.exception("Invalid stream URL. This track may not be available.")
         return self._get(file_url.split('https://api-v2.soundcloud.com/')[1], {'track_authorization': access_token})['url']
 
     def get_preview_stream_url(self, track_id, track_authorization=None):
@@ -83,10 +128,52 @@ class SoundCloudWebAPI:
     
 
     def get_user_albums_tracks(self, user_id):
-        user_albums = self._get(f'users/{user_id}/albums', {'limit': 1000})
-        album_data = {i['id']:i for i in user_albums['collection']}
-        user_tracks = self._get(f'users/{user_id}/tracks', {'limit': 1000})
-        track_data = {i['id']:i for i in user_tracks['collection']}
+        # Prefer numeric id; resolve permalink to id when user_id is non-numeric
+        uid = user_id
+        if isinstance(uid, str) and not uid.isdigit():
+            try:
+                resolved = self._get('resolve', {'url': f'https://soundcloud.com/{uid}'})
+                if isinstance(resolved, dict):
+                    uid = resolved.get('id') or (resolved.get('urn') or '').split(':')[-1] or uid
+                else:
+                    uid = getattr(resolved, 'id', uid)
+            except Exception:
+                pass
+        uid = str(uid) if uid is not None else str(user_id)
+        # Request without linked_partitioning; handle list or dict response and paginate via next_href
+        album_err = None
+        track_err = None
+        try:
+            album_items = self._get_collection_paginated(
+                f'users/{uid}/albums',
+                {'limit': 200}
+            )
+            album_data = {i['id']: i for i in album_items}
+        except Exception as e:
+            album_data = {}
+            album_err = e
+        try:
+            track_items = self._get_collection_paginated(
+                f'users/{uid}/tracks',
+                {'limit': 200}
+            )
+            track_data = {i['id']: i for i in track_items}
+        except Exception as e:
+            track_data = {}
+            track_err = e
+        if not album_data and not track_data and (album_err or track_err):
+            def _is_restricted(e):
+                msg = str(e).lower() if e else ""
+                return "403" in msg or "restricted" in msg or "not available" in msg
+            if _is_restricted(album_err) or _is_restricted(track_err):
+                print(f"[SoundCloud] User uid={uid}: content not available (restricted or disabled for API).")
+            else:
+                err_parts = []
+                if album_err:
+                    err_parts.append(f"albums: {album_err}")
+                if track_err:
+                    err_parts.append(f"tracks: {track_err}")
+                print(f"[SoundCloud] get_user_albums_tracks(uid={uid}) failed: {'; '.join(err_parts)}")
         return album_data, track_data
     
 
