@@ -123,13 +123,22 @@ class ModuleInterface:
             # Note: Track is streamable if result.get('streamable') is True
             # The actual stream URL will be fetched on-demand via lazy loading
             
-            # Get duration for tracks
+            # Get duration for tracks and albums/playlists
             duration = None
             if qt == 'tracks' and result.get('duration'):
                 duration = result['duration'] // 1000  # Convert ms to seconds
             elif qt in ('albums', 'playlists_without_albums') and result.get('duration'):
                 duration = result['duration'] // 1000
             
+            # Track count in additional for albums/playlists
+            additional = None
+            if qt in ('albums', 'playlists_without_albums'):
+                track_count = result.get('track_count') or len(result.get('tracks', []))
+                if qt == 'playlists_without_albums' and not track_count:
+                    continue
+                if track_count:
+                    additional = [f"1 track" if track_count == 1 else f"{track_count} tracks"]
+
             # Get year
             year = None
             if result.get('release_date'):
@@ -145,6 +154,7 @@ class ModuleInterface:
                 artists = self.artists_split(result['user']['username']) if qt != 'users' else None,
                 year = year,
                 duration = duration,
+                additional = additional,
                 image_url = image_url,
                 preview_url = preview_url,
                 extra_kwargs = {'data': {result['id'] : result}}
@@ -418,6 +428,12 @@ class ModuleInterface:
         else:
             error = "Track is not available for streaming or download (may be restricted in your region or not offered on SoundCloud)."
         
+        duration_sec = None
+        if track_data.get('duration') is not None:
+            try:
+                duration_sec = int(track_data['duration']) // 1000  # SoundCloud duration is in ms
+            except (TypeError, ValueError):
+                pass
         return TrackInfo(
             id = str(track_id),
             name = track_data['title'].split(' - ')[1] if ' - ' in track_data['title'] else track_data['title'],
@@ -435,6 +451,7 @@ class ModuleInterface:
             codec = final_codec,
             sample_rate = 48,
             release_year = self.get_release_year(track_data),
+            duration = duration_sec,
             cover_url = self.artwork_url_format(track_data.get('artwork_url') or track_data['user']['avatar_url']),
             explicit = metadata.get('explicit'),
             error = error,
