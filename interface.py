@@ -35,7 +35,11 @@ class ModuleInterface:
         
         # Check if web_access_token is provided
         if not web_access_token:
-            raise self.exception('SoundCloud credentials are required. Please fill in your web access token (oauth) in the settings.')
+            raise self.exception(
+                'SoundCloud credentials are missing in settings.json. '
+                'Please fill in your web access token (oauth). '
+                'Use the OrpheusDL GUI Settings tab (SoundCloud) or edit config/settings.json directly.'
+            )
         
         self.websession = SoundCloudWebAPI(web_access_token, module_controller.module_error)
         self.module_controller = module_controller
