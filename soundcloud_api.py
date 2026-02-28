@@ -6,17 +6,22 @@ class SoundCloudWebAPI:
         self.api_base = 'https://api-v2.soundcloud.com/'
         self.access_token = access_token
         self.exception = exception
+        self.client_id = 'gqKBMSuBw5rbN9rDRYPqKNvF17ovlObu'
         self.s = create_requests_session()
 
 
     def _headers(self):
-        return {
-            'Authorization': f'OAuth {self.access_token}',
+        headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36'
         }
+        if self.access_token:
+            headers['Authorization'] = f'OAuth {self.access_token}'
+        return headers
 
     def _get(self, url, params=None):
-        params = params or {}
+        params = params if params is not None else {}
+        if not self.access_token and 'client_id' not in params:
+            params['client_id'] = self.client_id
         headers = self._headers()
         if url.startswith('http://') or url.startswith('https://'):
             r = self.s.get(url, headers=headers)

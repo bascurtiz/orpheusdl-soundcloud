@@ -33,14 +33,6 @@ class ModuleInterface:
         settings = module_controller.module_settings
         web_access_token = settings.get('web_access_token', '')
         
-        # Check if web_access_token is provided
-        if not web_access_token:
-            raise self.exception(
-                'SoundCloud credentials are missing in settings.json. '
-                'Please fill in your web access token (oauth). '
-                'Use the OrpheusDL GUI Settings tab (SoundCloud) or edit config/settings.json directly.'
-            )
-        
         self.websession = SoundCloudWebAPI(web_access_token, module_controller.module_error)
         self.module_controller = module_controller
 
@@ -280,6 +272,8 @@ class ModuleInterface:
                 return 0 # Should not happen if regex matches
 
         # Handle other aac_ formats like aac_1_0, assign a default quality
+        if preset_string in ['aac_1_0', 'aac_hq']:
+            return 256
         if preset_string.startswith('aac_'):            
             return 64 
 
@@ -299,6 +293,12 @@ class ModuleInterface:
         if match_kbps:
             try: return int(match_kbps.group(1))
             except ValueError: pass
+
+        # Standard generic quality placeholders that don't directly indicate bitrate
+        if preset_string in ['mp3_0_0', 'mp3_0_1', 'mp3_1_0']:
+            return 128
+        if preset_string == 'opus_0_0':
+            return 64
 
         # Generic pattern for mp3_XXX or opus_XXX or aac_XXX (where XXX is bitrate)
         parts = preset_string.split('_')
@@ -324,7 +324,12 @@ class ModuleInterface:
         file_url, download_url, final_codec, error = None, None, CodecEnum.AAC, None
         final_is_hls_stream = False
 
-        if track_data['downloadable'] and track_data['has_downloads_left']:
+        if track_data.get('policy') in ('BLOCK', 'SNIP'):
+            if not self.websession.access_token:
+                error = "This is a SoundCloud Go+ premium track. Please configure a valid access token in Settings to stream or download it."
+            else:
+                error = "This is a SoundCloud Go+ premium track. Your account requires a Go+ subscription to stream or download it."
+        elif track_data.get('downloadable') and track_data.get('has_downloads_left'):
             download_url = self.websession.get_track_download(track_id)
             content_type_header = self.websession.s.head(download_url).headers.get('Content-Type', '')
             codec_str_part = content_type_header.split('/')[-1]
@@ -453,7 +458,7 @@ class ModuleInterface:
                 'is_hls': final_is_hls_stream
             },
             codec = final_codec,
-            sample_rate = 48,
+            sample_rate = 48 if final_codec == CodecEnum.AAC else 44.1,
             release_year = self.get_release_year(track_data),
             duration = duration_sec,
             cover_url = self.artwork_url_format(track_data.get('artwork_url') or track_data['user']['avatar_url']),
