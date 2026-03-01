@@ -166,10 +166,43 @@ class SoundCloudWebAPI:
         except Exception as e:
             track_data = {}
             track_err = e
+
+        def _is_restricted(e):
+            msg = str(e).lower() if e else ""
+            return "403" in msg or "restricted" in msg or "not available" in msg
+
+        # In case /tracks returns a restricted error, attempt fallback endpoints
+        if track_err and _is_restricted(track_err):
+            try:
+                fallback_items = []
+                try:
+                    toptracks = self._get_collection_paginated(f'users/{uid}/toptracks', {'limit': 200})
+                    for item in toptracks:
+                        if 'track' in item:
+                            fallback_items.append(item['track'])
+                        elif 'id' in item:
+                            fallback_items.append(item)
+                except Exception:
+                    pass
+                
+                try:
+                    spotlight = self._get_collection_paginated(f'users/{uid}/spotlight', {'limit': 200})
+                    for item in spotlight:
+                        if 'track' in item:
+                            fallback_items.append(item['track'])
+                        elif 'id' in item:
+                            fallback_items.append(item)
+                except Exception:
+                    pass
+                
+                if fallback_items:
+                    track_data = {i['id']: i for i in fallback_items if 'id' in i}
+                    track_err = None
+                    print(f"[SoundCloud] User uid={uid}: /tracks restricted, used fallback endpoints (recovered {len(track_data)} tracks).")
+            except Exception:
+                pass
+
         if not album_data and not track_data and (album_err or track_err):
-            def _is_restricted(e):
-                msg = str(e).lower() if e else ""
-                return "403" in msg or "restricted" in msg or "not available" in msg
             if _is_restricted(album_err) or _is_restricted(track_err):
                 print(f"[SoundCloud] User uid={uid}: content not available (restricted or disabled for API).")
             else:
