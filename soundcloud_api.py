@@ -198,7 +198,7 @@ class SoundCloudWebAPI:
                 if fallback_items:
                     track_data = {i['id']: i for i in fallback_items if 'id' in i}
                     track_err = None
-                    print(f"[SoundCloud] User uid={uid}: /tracks restricted, used fallback endpoints (recovered {len(track_data)} tracks).")
+                    # print(f"[SoundCloud] User uid={uid}: /tracks restricted, used fallback endpoints (recovered {len(track_data)} tracks).")
             except Exception:
                 pass
 

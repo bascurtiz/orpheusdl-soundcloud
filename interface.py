@@ -318,7 +318,9 @@ class ModuleInterface:
         return 0 # Default
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
-        track_data = data[track_id] if track_id in data else self.websession._get('tracks/' + track_id)
+        track_data = data.get(track_id) or data.get(int(track_id) if str(track_id).isdigit() else track_id)
+        if not track_data:
+            track_data = self.websession._get('tracks/' + str(track_id))
         metadata = track_data.get('publisher_metadata') or {}
 
         file_url, download_url, final_codec, error = None, None, CodecEnum.AAC, None
@@ -483,7 +485,9 @@ class ModuleInterface:
             return None
         
         # Attempt to get data from the provided dict first
-        playlist_data = data[album_id]
+        playlist_data = data.get(album_id) or data.get(int(album_id) if str(album_id).isdigit() else album_id)
+        if not playlist_data:
+            raise KeyError(f"Album ID {album_id} not found in provided data")
         playlist_tracks = self.websession.get_tracks_from_tracklist(playlist_data['tracks']) if playlist_data.get('tracks') else {}
         return AlbumInfo(
             name = playlist_data['title'],
@@ -497,7 +501,9 @@ class ModuleInterface:
     
 
     def get_playlist_info(self, playlist_id, data):
-        playlist_data = data[playlist_id]
+        playlist_data = data.get(playlist_id) or data.get(int(playlist_id) if str(playlist_id).isdigit() else playlist_id)
+        if not playlist_data:
+            raise KeyError(f"Playlist ID {playlist_id} not found in provided data")
         playlist_tracks = self.websession.get_tracks_from_tracklist(playlist_data['tracks'])
         return PlaylistInfo(
             name = playlist_data['title'],
