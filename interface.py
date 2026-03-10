@@ -10,6 +10,7 @@ def _get_ffmpeg():
     return ffmpeg
 
 import re
+import concurrent.futures
 
 from utils.models import *
 from utils.utils import create_temp_filename, download_to_temp, silentremove
@@ -144,6 +145,10 @@ class ModuleInterface:
             elif result.get('created_at'):
                 year = result['created_at'].split('-')[0]
             
+            # Extract genre for tracks
+            if qt == 'tracks' and result.get('genre'):
+                additional = [result['genre']]
+
             search_results.append(SearchResult(
                 result_id = result['id'],
                 name = result['title'] if qt != 'users' else result['username'],
@@ -156,6 +161,62 @@ class ModuleInterface:
                 extra_kwargs = {'data': {result['id'] : result}}
             ))
         
+        # Batch fetch missing genres for tracks using ThreadPoolExecutor
+        if qt == 'tracks':
+            missing_genre_tracks = [r for r in search_results if not r.additional]
+            if missing_genre_tracks:
+                track_ids = [str(r.result_id) for r in missing_genre_tracks]
+                track_genres = {}
+                
+                def _fetch_sc_track_genre(tid):
+                    try:
+                        t_data = self.websession._get(f'tracks/{tid}')
+                        return tid, t_data.get('genre')
+                    except:
+                        return tid, None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    for tid, genre in executor.map(_fetch_sc_track_genre, track_ids):
+                        if genre:
+                            track_genres[str(tid)] = genre
+                
+                for r in missing_genre_tracks:
+                    tid_str = str(r.result_id)
+                    if tid_str in track_genres:
+                        r.additional = [track_genres[tid_str]]
+
+        # Batch fetch missing genres and confirmed track counts for albums/playlists using ThreadPoolExecutor
+        if qt in ('albums', 'playlists_without_albums'):
+            missing_meta_results = [r for r in search_results]
+            if missing_meta_results:
+                ids = [str(r.result_id) for r in missing_meta_results]
+                item_meta = {}
+                
+                def _fetch_sc_playlist_meta(pid):
+                    try:
+                        p_data = self.websession._get(f'playlists/{pid}')
+                        if p_data:
+                            track_count = p_data.get('track_count') or len(p_data.get('tracks', []))
+                            genre = p_data.get('genre')
+                            return pid, {'track_count': track_count, 'genre': genre}
+                    except: pass
+                    return pid, None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    for pid, meta in executor.map(_fetch_sc_playlist_meta, ids):
+                        if meta: item_meta[str(pid)] = meta
+                
+                for r in missing_meta_results:
+                    pid_str = str(r.result_id)
+                    if pid_str in item_meta:
+                        meta = item_meta[pid_str]
+                        additional = []
+                        if meta['track_count']:
+                            additional.append(f"1 track" if meta['track_count'] == 1 else f"{meta['track_count']} tracks")
+                        if meta['genre']:
+                            additional.append(meta['genre'])
+                        r.additional = additional
+
         return search_results
 
 
@@ -479,21 +540,38 @@ class ModuleInterface:
     
 
     def get_album_info(self, album_id, data: dict) -> AlbumInfo | None:
-        if not album_id:  # This will be true if album_id is None or an empty string
+        if not album_id:
             if self.module_controller.orpheus_options.debug_mode:
-                self.module_controller.printer_controller.oprint(f"[SoundCloud] get_album_info: Called with an empty or None album_id. Cannot fetch album details.")
+                self.module_controller.printer_controller.oprint(f"[SoundCloud] get_album_info: Called with an empty or None album_id.")
             return None
         
         # Attempt to get data from the provided dict first
-        playlist_data = data.get(album_id) or data.get(int(album_id) if str(album_id).isdigit() else album_id)
+        playlist_data = None
+        if isinstance(data, dict):
+            # Check if data is already the album record (e.g. from artist expansion)
+            if str(data.get('id')) == str(album_id):
+                playlist_data = data
+            else:
+                playlist_data = data.get(album_id) or data.get(str(album_id)) or (data.get(int(album_id) if str(album_id).isdigit() else None))
+        
+        # Fallback: Fetch full playlist info if data is missing or incomplete (no tracks)
+        if not playlist_data or not playlist_data.get('tracks') or not isinstance(playlist_data['tracks'], list) or (len(playlist_data['tracks']) > 0 and 'streamable' not in playlist_data['tracks'][0]):
+            try:
+                playlist_data = self.websession._get(f'playlists/{album_id}')
+            except Exception as e:
+                if self.module_controller.orpheus_options.debug_mode:
+                    self.module_controller.printer_controller.oprint(f"[SoundCloud] Error fetching album {album_id}: {e}")
+                return None
+
         if not playlist_data:
-            raise KeyError(f"Album ID {album_id} not found in provided data")
+            return None
+
         playlist_tracks = self.websession.get_tracks_from_tracklist(playlist_data['tracks']) if playlist_data.get('tracks') else {}
         return AlbumInfo(
-            name = playlist_data['title'],
-            artist = playlist_data['user']['username'],
-            artist_id = playlist_data['user']['permalink'],
-            cover_url = self.artwork_url_format(playlist_data.get('artwork_url') or playlist_data['user']['avatar_url']),
+            name = playlist_data.get('title', 'Unknown Album'),
+            artist = playlist_data.get('user', {}).get('username') or 'Unknown Artist',
+            artist_id = playlist_data.get('user', {}).get('permalink'),
+            cover_url = self.artwork_url_format(playlist_data.get('artwork_url') or playlist_data.get('user', {}).get('avatar_url')),
             release_year = self.get_release_year(playlist_data),
             tracks = list(playlist_tracks.keys()),
             track_extra_kwargs = {'data': playlist_tracks}
@@ -539,9 +617,78 @@ class ModuleInterface:
         # Only retry with permalink when we didn't use numeric id (e.g. artist_id was permalink); avoids duplicate 403 when uid is same
         if not album_data and not track_data and permalink and str(permalink) != str(artist_id) and not (str(artist_id).isdigit()):
             album_data, track_data = self.websession.get_user_albums_tracks(permalink)
+        albums_out = []
+        for aid, a in album_data.items():
+            title = a.get('title')
+            if title:
+                release_date = a.get('release_date') or a.get('display_date') or a.get('created_at') or ''
+                release_year = release_date.split('-')[0] if release_date else None
+                
+                # Extract track count and genre
+                track_count = a.get('track_count') or len(a.get('tracks', []))
+                genre = a.get('genre')
+                
+                additional = []
+                if track_count:
+                    additional.append(f"1 track" if track_count == 1 else f"{track_count} tracks")
+                if genre:
+                    additional.append(genre)
+
+                # Get artwork URL (small thumbnail for artist expansion)
+                cover_url = ''
+                pic = a.get('artwork_url') or (a.get('user', {}).get('avatar_url') if a.get('user') else None)
+                if pic:
+                    cover_url = pic.replace('-large', '-t50x50') # Smallest size for list expansion
+
+                albums_out.append({
+                    'id': str(aid),
+                    'name': title,
+                    'artist': a.get('user', {}).get('username') or name,
+                    'release_year': release_year,
+                    'cover_url': cover_url,
+                    'additional': additional
+                })
+
+        # Batch fetch missing durations/years/track counts/genres for albums using ThreadPoolExecutor
+        missing_metadata = [idx for idx, t in enumerate(albums_out) if not t.get('additional') or not t.get('release_year')]
+        if missing_metadata:
+            a_meta = {}
+            def _fetch_sc_album_meta(aid):
+                try:
+                    a_data = self.websession._get(f'playlists/{aid}')
+                    if a_data:
+                        track_count = a_data.get('track_count') or len(a_data.get('tracks', []))
+                        genre = a_data.get('genre')
+                        additional = []
+                        if track_count:
+                            additional.append(f"1 track" if track_count == 1 else f"{track_count} tracks")
+                        if genre:
+                            additional.append(genre)
+                            
+                        return aid, {
+                            'additional': additional,
+                            'year': (a_data.get('release_date') or a_data.get('display_date') or a_data.get('created_at', '')).split('-')[0] or None
+                        }
+                except: pass
+                return aid, None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                fetch_ids = [albums_out[idx]['id'] for idx in missing_metadata]
+                for aid, meta in executor.map(_fetch_sc_album_meta, fetch_ids):
+                    if meta: a_meta[str(aid)] = meta
+            
+            for idx in missing_metadata:
+                t = albums_out[idx]
+                aid = str(t['id'])
+                if aid in a_meta:
+                    if not t.get('additional') and a_meta[aid]['additional']:
+                        t['additional'] = a_meta[aid]['additional']
+                    if not t.get('release_year'):
+                        t['release_year'] = a_meta[aid]['year']
+
         return ArtistInfo(
             name = name,
-            albums = list(album_data.keys()),
+            albums = albums_out if albums_out else list(album_data.keys()),
             album_extra_kwargs = {'data': album_data},
             tracks = list(track_data.keys()),
             track_extra_kwargs = {'data': track_data}
