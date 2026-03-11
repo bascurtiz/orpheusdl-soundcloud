@@ -518,7 +518,8 @@ class ModuleInterface:
                 'download_url': download_url, 
                 'codec': final_codec, 
                 'track_authorization': track_data.get('track_authorization', ''),
-                'is_hls': final_is_hls_stream
+                'is_hls': final_is_hls_stream,
+                'track_data': track_data
             },
             codec = final_codec,
             sample_rate = 48 if final_codec == CodecEnum.AAC else 44.1,
