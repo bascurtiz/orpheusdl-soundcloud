@@ -6,13 +6,15 @@ class SoundCloudWebAPI:
         self.api_base = 'https://api-v2.soundcloud.com/'
         self.access_token = access_token
         self.exception = exception
-        self.client_id = 'gqKBMSuBw5rbN9rDRYPqKNvF17ovlObu'
+        self.client_id = 'V2H94yGe97PqZ9qR99Pq99Pq99Pq99Pq'
         self.s = create_requests_session()
 
 
     def _headers(self):
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36',
+            'Origin': 'https://soundcloud.com',
+            'Referer': 'https://soundcloud.com/'
         }
         if self.access_token:
             headers['Authorization'] = f'OAuth {self.access_token}'
@@ -20,7 +22,7 @@ class SoundCloudWebAPI:
 
     def _get(self, url, params=None):
         params = params if params is not None else {}
-        if not self.access_token and 'client_id' not in params:
+        if 'client_id' not in params:
             params['client_id'] = self.client_id
         headers = self._headers()
         if url.startswith('http://') or url.startswith('https://'):
@@ -123,6 +125,10 @@ class SoundCloudWebAPI:
             print(f"[SoundCloud] Error getting preview stream: {e}")
             return None
 
+
+    def get_me(self):
+        """Fetch information about the currently authenticated user."""
+        return self._get('me')
 
     def resolve_url(self, url):
         return self._get('resolve', {'url': url})

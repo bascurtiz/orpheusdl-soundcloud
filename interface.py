@@ -36,6 +36,37 @@ class ModuleInterface:
         
         self.websession = SoundCloudWebAPI(web_access_token, module_controller.module_error)
         self.module_controller = module_controller
+        
+        # Diagnostic: Check account status
+        if web_access_token:
+            try:
+                me = self.websession.get_me()
+                username = me.get('username', 'Unknown')
+                # Exhaustive check for Go+ status
+                # Diagnostic revealed 'consumer_subscriptions' and 'consumer_subscription' keys
+                subscriptions = me.get('consumer_subscriptions') or me.get('subscriptions') or []
+                subscription = me.get('consumer_subscription')
+                quota = me.get('quota', {})
+                
+                if subscriptions:
+                    self.plan = subscriptions[0].get('product', {}).get('id', 'Premium')
+                elif subscription:
+                    self.plan = subscription.get('product', {}).get('id', 'Premium')
+                elif quota.get('high_tier') or quota.get('top_tier'):
+                    self.plan = 'high_tier'
+                elif me.get('plan') and str(me.get('plan')).lower() != 'free':
+                    self.plan = me.get('plan')
+                else:
+                    self.plan = 'Free'
+                
+                if module_controller.orpheus_options.debug_mode:
+                    module_controller.printer_controller.oprint(f"[SoundCloud] Logged in as {username} ({self.plan})")
+            except Exception as e:
+                self.plan = 'Unknown'
+                if module_controller.orpheus_options.debug_mode:
+                    module_controller.printer_controller.oprint(f"[SoundCloud] Authentication check failed: {e}")
+        else:
+            self.plan = 'Free'
 
         self.artists_split = lambda artists_string: artists_string.replace(' & ', ', ').replace(' and ', ', ').replace(' x ', ', ').split(', ')
         self.artwork_url_format = lambda artwork_url: artwork_url.replace('-large', '-original') if artwork_url else None
@@ -379,17 +410,23 @@ class ModuleInterface:
         return 0 # Default
 
     def get_track_info(self, track_id, quality_tier: QualityEnum, codec_options: CodecOptions, data={}):
-        track_data = data.get(track_id) or data.get(int(track_id) if str(track_id).isdigit() else track_id)
-        if not track_data:
+        track_data = data.get(track_id) or data.get(str(track_id)) or data.get(int(track_id) if str(track_id).isdigit() else track_id)
+        # If we have no data, OR the data is incomplete (missing 'media' or 'transcodings'), fetch full info.
+        # Playlist/Album tracks often come as stubs without the 'media' object or with empty transcodings.
+        if not track_data or not track_data.get('media', {}).get('transcodings'):
             track_data = self.websession._get('tracks/' + str(track_id))
         metadata = track_data.get('publisher_metadata') or {}
 
         file_url, download_url, final_codec, error = None, None, CodecEnum.AAC, None
         final_is_hls_stream = False
 
-        if track_data.get('policy') in ('BLOCK', 'SNIP'):
+        # If the policy is BLOCK or SNIP, we only error out if no transcodings are available.
+        # Check media['transcodings'] directly as 'streamable' might be False in metadata for Go+ tracks.
+        if track_data.get('policy') in ('BLOCK', 'SNIP') and not track_data.get('media', {}).get('transcodings'):
             if not self.websession.access_token:
                 error = "This is a SoundCloud Go+ premium track. Please configure a valid access token in Settings to stream or download it."
+            elif 'high' in str(self.plan).lower() or 'go+' in str(self.plan).lower() or 'premium' in str(self.plan).lower():
+                error = "This track is currently restricted in your region and cannot be streamed or downloaded even with a Go+ subscription."
             else:
                 error = "This is a SoundCloud Go+ premium track. Your account requires a Go+ subscription to stream or download it."
         elif track_data.get('downloadable') and track_data.get('has_downloads_left'):
@@ -589,6 +626,7 @@ class ModuleInterface:
             creator = playlist_data['user']['username'],
             creator_id = playlist_data['user']['permalink'],
             cover_url = self.artwork_url_format(playlist_data['artwork_url']),
+            duration = playlist_data.get('duration') // 1000 if playlist_data.get('duration') else None,
             release_year = self.get_release_year(playlist_data),
             tracks = list(playlist_tracks.keys()),
             track_extra_kwargs = {'data': playlist_tracks}
@@ -645,6 +683,7 @@ class ModuleInterface:
                     'id': str(aid),
                     'name': title,
                     'artist': a.get('user', {}).get('username') or name,
+                    'duration': a.get('duration'),
                     'release_year': release_year,
                     'cover_url': cover_url,
                     'additional': additional
@@ -668,6 +707,7 @@ class ModuleInterface:
                             
                         return aid, {
                             'additional': additional,
+                            'duration': a_data.get('duration'),
                             'year': (a_data.get('release_date') or a_data.get('display_date') or a_data.get('created_at', '')).split('-')[0] or None
                         }
                 except: pass
@@ -684,6 +724,8 @@ class ModuleInterface:
                 if aid in a_meta:
                     if not t.get('additional') and a_meta[aid]['additional']:
                         t['additional'] = a_meta[aid]['additional']
+                    if not t.get('duration') and a_meta[aid].get('duration'):
+                        t['duration'] = a_meta[aid]['duration']
                     if not t.get('release_year'):
                         t['release_year'] = a_meta[aid]['year']
 
