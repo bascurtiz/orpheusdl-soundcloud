@@ -577,7 +577,7 @@ class ModuleInterface:
         )
     
 
-    def get_album_info(self, album_id, data: dict) -> AlbumInfo | None:
+    def get_album_info(self, album_id, data: dict = {}) -> AlbumInfo | None:
         if not album_id:
             if self.module_controller.orpheus_options.debug_mode:
                 self.module_controller.printer_controller.oprint(f"[SoundCloud] get_album_info: Called with an empty or None album_id.")
@@ -616,7 +616,8 @@ class ModuleInterface:
         )
     
 
-    def get_playlist_info(self, playlist_id, data):
+    def get_playlist_info(self, playlist_id, data = {}):
+        data = data if data else {}
         playlist_data = data.get(playlist_id) or data.get(int(playlist_id) if str(playlist_id).isdigit() else playlist_id)
         if not playlist_data:
             raise KeyError(f"Playlist ID {playlist_id} not found in provided data")
