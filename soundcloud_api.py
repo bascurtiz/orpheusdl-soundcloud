@@ -6,7 +6,7 @@ class SoundCloudWebAPI:
         self.api_base = 'https://api-v2.soundcloud.com/'
         self.access_token = access_token
         self.exception = exception
-        self.client_id = 'V2H94yGe97PqZ9qR99Pq99Pq99Pq99Pq'
+        self.client_id = 'WU4bVxk5Df0g5JC8ULzW77Ry7OM10Lyj'
         self.s = create_requests_session()
 
 
@@ -32,6 +32,8 @@ class SoundCloudWebAPI:
         if r.status_code not in [200, 201, 202]:
             if r.status_code == 403:
                 raise self.exception("This track is not available (e.g. restricted in your country or disabled for API access).")
+            if r.status_code == 401:
+                raise self.exception(f"Unauthorized (401). This usually means the SoundCloud access token or public client ID is invalid or expired. Response: {r.text}")
             raise self.exception(f'{r.status_code!s}: {r.text}')
         return r.json()
 
