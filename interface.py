@@ -543,12 +543,14 @@ class ModuleInterface:
                 duration_sec = int(track_data['duration']) // 1000  # SoundCloud duration is in ms
             except (TypeError, ValueError):
                 pass
+        artists_list = self.artists_split(metadata['artist'] if metadata.get('artist') else track_data['user']['username'])
+        
         return TrackInfo(
             id = str(track_id),
             name = track_data['title'].split(' - ')[1] if ' - ' in track_data['title'] else track_data['title'],
             album = metadata.get('album_title'),
             album_id = '',
-            artists = self.artists_split(metadata['artist'] if metadata.get('artist') else track_data['user']['username']),
+            artists = artists_list,
             artist_id = '' if 'artist' in metadata else track_data['user']['permalink'],
             download_extra_kwargs = {
                 'track_url': file_url, 
@@ -566,18 +568,20 @@ class ModuleInterface:
             explicit = metadata.get('explicit'),
             error = error,
             tags =  Tags(
+                album_artist = artists_list[0] if artists_list else None,
                 track_number = int(list(data.keys()).index(track_id)) + 1 if data.get(track_id) else 1,
                 release_date = track_data['created_at'].split('T')[0] if track_data.get("created_at") else None,
                 genres = track_data['genre'].split('/') if track_data.get('genre') else None,
                 composer = metadata.get('writer_composer'),
                 copyright = metadata.get('p_line'),
                 upc = metadata.get('upc_or_ean'),
-                isrc = metadata.get('isrc')
+                isrc = metadata.get('isrc'),
+                track_url = track_data.get('permalink_url')
             )
         )
     
 
-    def get_album_info(self, album_id, data: dict = {}) -> AlbumInfo | None:
+    def get_album_info(self, album_id, data: dict) -> AlbumInfo | None:
         if not album_id:
             if self.module_controller.orpheus_options.debug_mode:
                 self.module_controller.printer_controller.oprint(f"[SoundCloud] get_album_info: Called with an empty or None album_id.")
@@ -616,8 +620,7 @@ class ModuleInterface:
         )
     
 
-    def get_playlist_info(self, playlist_id, data = {}):
-        data = data if data else {}
+    def get_playlist_info(self, playlist_id, data):
         playlist_data = data.get(playlist_id) or data.get(int(playlist_id) if str(playlist_id).isdigit() else playlist_id)
         if not playlist_data:
             raise KeyError(f"Playlist ID {playlist_id} not found in provided data")
