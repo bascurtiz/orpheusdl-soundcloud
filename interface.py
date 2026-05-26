@@ -616,6 +616,7 @@ class ModuleInterface:
             cover_url = self.artwork_url_format(playlist_data.get('artwork_url') or playlist_data.get('user', {}).get('avatar_url')),
             release_year = self.get_release_year(playlist_data),
             tracks = list(playlist_tracks.keys()),
+            expected_track_count=int(playlist_data.get('track_count')) if playlist_data.get('track_count') is not None else None,
             track_extra_kwargs = {'data': playlist_tracks}
         )
     
